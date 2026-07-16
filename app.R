@@ -101,25 +101,95 @@ apply_theme <- function(p, theme_name, base_size = 12) {
   p + get_theme_obj(theme_name, base_size)
 }
 
-# Continuous fill scale for spatial / feature plots
+# Numeric metadata columns — i.e. module scores (AddModuleScore), UCell scores,
+# and QC metrics. These live in meta.data, not in the expression matrix, so they
+# must be offered separately from genes.
+get_numeric_meta <- function(o) {
+  meta <- o@meta.data
+  nm   <- names(meta)[vapply(meta, is.numeric, logical(1))]
+  sort(nm)
+}
+
+# Sequential scales are for expression/UCell (bounded, all-positive).
+# Diverging scales are centred at zero for AddModuleScore output, which is
+# mean-centred against a control gene set and is routinely negative.
+CONT_SCALE_CHOICES <- c(
+  "Viridis"                  = "viridis",
+  "Plasma"                   = "plasma",
+  "YlOrRd"                   = "YlOrRd",
+  "Blues"                    = "Blues",
+  "Diverging: Blue-Red (0)"  = "div_bwr",
+  "Diverging: Purple-Green (0)" = "div_pgr"
+)
+
+# Continuous fill scale for spatial plots
 cont_fill_scale <- function(scale_name) {
   switch(scale_name,
     viridis = scale_fill_viridis_c(option = "viridis"),
     plasma  = scale_fill_viridis_c(option = "plasma"),
     YlOrRd  = scale_fill_distiller(palette = "YlOrRd", direction = 1),
     Blues   = scale_fill_distiller(palette = "Blues",  direction = 1),
+    div_bwr = scale_fill_gradient2(low = "#2166AC", mid = "grey92",
+                                   high = "#B2182B", midpoint = 0),
+    div_pgr = scale_fill_gradient2(low = "#762A83", mid = "grey92",
+                                   high = "#1B7837", midpoint = 0),
     scale_fill_viridis_c()
   )
 }
 
-# Continuous color scale for feature plots on reductions
+# Continuous color scale for reduction plots
 cont_color_scale <- function(scale_name) {
   switch(scale_name,
     viridis = scale_color_viridis_c(option = "viridis"),
     plasma  = scale_color_viridis_c(option = "plasma"),
     YlOrRd  = scale_color_distiller(palette = "YlOrRd", direction = 1),
     Blues   = scale_color_distiller(palette = "Blues",  direction = 1),
+    div_bwr = scale_color_gradient2(low = "#2166AC", mid = "grey92",
+                                    high = "#B2182B", midpoint = 0),
+    div_pgr = scale_color_gradient2(low = "#762A83", mid = "grey92",
+                                    high = "#1B7837", midpoint = 0),
     scale_color_viridis_c()
+  )
+}
+
+# Symmetric limits around zero, so +0.5 and -0.5 read as equally intense.
+# Without this a score spanning -0.2..2.0 makes every negative bin look
+# identical, which misrepresents depletion.
+symmetric_limits <- function(values) {
+  m <- suppressWarnings(max(abs(range(values, na.rm = TRUE))))
+  if (!is.finite(m) || m == 0) return(NULL)
+  c(-m, m)
+}
+
+score_centered_fill <- function(values, scale_name) {
+  lim <- symmetric_limits(values)
+  if (is.null(lim)) return(cont_fill_scale(scale_name))
+  switch(scale_name,
+    div_bwr = scale_fill_gradient2(low = "#2166AC", mid = "grey92", high = "#B2182B",
+                                   midpoint = 0, limits = lim),
+    div_pgr = scale_fill_gradient2(low = "#762A83", mid = "grey92", high = "#1B7837",
+                                   midpoint = 0, limits = lim),
+    viridis = scale_fill_viridis_c(option = "viridis", limits = lim),
+    plasma  = scale_fill_viridis_c(option = "plasma",  limits = lim),
+    YlOrRd  = scale_fill_distiller(palette = "YlOrRd", direction = 1, limits = lim),
+    Blues   = scale_fill_distiller(palette = "Blues",  direction = 1, limits = lim),
+    scale_fill_viridis_c(limits = lim)
+  )
+}
+
+score_centered_color <- function(values, scale_name) {
+  lim <- symmetric_limits(values)
+  if (is.null(lim)) return(cont_color_scale(scale_name))
+  switch(scale_name,
+    div_bwr = scale_color_gradient2(low = "#2166AC", mid = "grey92", high = "#B2182B",
+                                    midpoint = 0, limits = lim),
+    div_pgr = scale_color_gradient2(low = "#762A83", mid = "grey92", high = "#1B7837",
+                                    midpoint = 0, limits = lim),
+    viridis = scale_color_viridis_c(option = "viridis", limits = lim),
+    plasma  = scale_color_viridis_c(option = "plasma",  limits = lim),
+    YlOrRd  = scale_color_distiller(palette = "YlOrRd", direction = 1, limits = lim),
+    Blues   = scale_color_distiller(palette = "Blues",  direction = 1, limits = lim),
+    scale_color_viridis_c(limits = lim)
   )
 }
 
@@ -258,8 +328,9 @@ ui <- page_sidebar(
         sidebar = sidebar(
           open = TRUE,
           selectInput("sp_type", "Plot Type",
-                      choices = c("Clusters / Metadata" = "dim",
-                                  "Gene Expression"     = "feature")),
+                      choices = c("Clusters / Metadata"      = "dim",
+                                  "Gene Expression"          = "feature",
+                                  "Module / UCell Score"     = "score")),
 
           conditionalPanel("input.sp_type == 'dim'",
             selectInput("sp_color_by", "Color By", choices = NULL),
@@ -271,10 +342,17 @@ ui <- page_sidebar(
             selectizeInput("sp_gene", "Gene", choices = NULL,
                            options = list(placeholder = "Type gene name...")),
             selectInput("sp_color_scale", "Color Scale",
-                        choices = c("Viridis" = "viridis",
-                                    "Plasma"  = "plasma",
-                                    "YlOrRd"  = "YlOrRd",
-                                    "Blues"   = "Blues"))
+                        choices = CONT_SCALE_CHOICES)
+          ),
+
+          conditionalPanel("input.sp_type == 'score'",
+            selectizeInput("sp_score", "Module / UCell Score", choices = NULL,
+                           options = list(placeholder = "Select a score...")),
+            selectInput("sp_score_scale", "Color Scale",
+                        choices  = CONT_SCALE_CHOICES,
+                        selected = "viridis"),
+            checkboxInput("sp_score_center",
+                          "Center colour scale at 0", FALSE)
           ),
 
           selectInput("sp_image", "Image / Sample", choices = NULL),
@@ -303,8 +381,9 @@ ui <- page_sidebar(
           open = TRUE,
           selectInput("dr_red", "Reduction", choices = NULL),
           selectInput("dr_type", "Plot Type",
-                      choices = c("Clusters / Metadata" = "dim",
-                                  "Gene Expression"     = "feature")),
+                      choices = c("Clusters / Metadata"  = "dim",
+                                  "Gene Expression"      = "feature",
+                                  "Module / UCell Score" = "score")),
 
           conditionalPanel("input.dr_type == 'dim'",
             selectInput("dr_color_by", "Color By", choices = NULL),
@@ -316,10 +395,17 @@ ui <- page_sidebar(
             selectizeInput("dr_gene", "Gene", choices = NULL,
                            options = list(placeholder = "Type gene name...")),
             selectInput("dr_color_scale", "Color Scale",
-                        choices = c("Viridis" = "viridis",
-                                    "Plasma"  = "plasma",
-                                    "YlOrRd"  = "YlOrRd",
-                                    "Blues"   = "Blues"))
+                        choices = CONT_SCALE_CHOICES)
+          ),
+
+          conditionalPanel("input.dr_type == 'score'",
+            selectizeInput("dr_score", "Module / UCell Score", choices = NULL,
+                           options = list(placeholder = "Select a score...")),
+            selectInput("dr_score_scale", "Color Scale",
+                        choices  = CONT_SCALE_CHOICES,
+                        selected = "viridis"),
+            checkboxInput("dr_score_center",
+                          "Center colour scale at 0", FALSE)
           ),
 
           numericInput("dr_pt", "Point Size", 0.5, 0.1, 5, 0.1),
@@ -344,9 +430,11 @@ ui <- page_sidebar(
       layout_sidebar(
         sidebar = sidebar(
           open = TRUE,
-          selectizeInput("fe_genes", "Genes (one or more)", choices = NULL,
+          selectizeInput("fe_genes", "Genes / Scores (one or more)",
+                         choices  = NULL,
                          multiple = TRUE,
-                         options = list(placeholder = "Type gene names...")),
+                         options  = list(placeholder = "Type gene or score name...")),
+          helpText(tags$small("Includes genes and module/UCell scores.")),
           selectInput("fe_type", "Plot Type",
                       choices = c("Violin"   = "violin",
                                   "Dot Plot" = "dot",
@@ -518,6 +606,10 @@ server <- function(input, output, session) {
                  else NULL
     def_ident <- if ("orig.ident" %in% meta_cols) "orig.ident" else meta_cols[1]
 
+    # Module / UCell scores and other numeric metadata
+    scores    <- get_numeric_meta(o)
+    def_score <- if (length(scores) > 0) scores[1] else NULL
+
     updateSelectInput(session, "active_assay", choices = assays, selected = def_assay)
 
     # Spatial
@@ -525,6 +617,9 @@ server <- function(input, output, session) {
     updateSelectInput(session, "sp_image",
                       choices = if (length(images) > 0) images else c("(no images)" = "NONE"))
     updateSelectizeInput(session, "sp_gene", choices = features, server = TRUE)
+    updateSelectizeInput(session, "sp_score",
+                         choices  = if (length(scores) > 0) scores else c("(no numeric metadata)" = ""),
+                         selected = def_score, server = TRUE)
 
     # Reduction
     updateSelectInput(session, "dr_red",
@@ -532,9 +627,19 @@ server <- function(input, output, session) {
                       selected = def_red)
     updateSelectInput(session, "dr_color_by", choices = meta_cols, selected = def_clust)
     updateSelectizeInput(session, "dr_gene",  choices = features, server = TRUE)
+    updateSelectizeInput(session, "dr_score",
+                         choices  = if (length(scores) > 0) scores else c("(no numeric metadata)" = ""),
+                         selected = def_score, server = TRUE)
 
-    # Feature expression
-    updateSelectizeInput(session, "fe_genes", choices = features, server = TRUE)
+    # Feature expression — genes and scores in one list, scores grouped first
+    # so they're easy to find among tens of thousands of gene names.
+    fe_choices <- if (length(scores) > 0) {
+      list("Module / UCell scores" = as.list(scores),
+           "Genes"                 = as.list(features))
+    } else {
+      list("Genes" = as.list(features))
+    }
+    updateSelectizeInput(session, "fe_genes", choices = fe_choices, server = TRUE)
     updateSelectInput(session, "fe_group",    choices = meta_cols, selected = def_clust)
     # Initialise reference-group choices from the default cluster column
     def_clust_lvls <- levels(order_factor(o@meta.data[[def_clust]]))
@@ -649,7 +754,7 @@ server <- function(input, output, session) {
 
       }, error = function(e) error_plot(conditionMessage(e)))
 
-    } else {
+    } else if (input$sp_type == "feature") {
       gene <- input$sp_gene
       req(gene, nchar(gene) > 0)
 
@@ -657,6 +762,27 @@ server <- function(input, output, session) {
         p <- SpatialFeaturePlot(o, features = gene, images = img,
                                 pt.size.factor = pt, alpha = al) +
           cont_fill_scale(input$sp_color_scale)
+        apply_theme(p, input$sp_theme, input$base_size)
+      }, error = function(e) error_plot(conditionMessage(e)))
+
+    } else {
+      # Module / UCell score — a numeric meta.data column.
+      # SpatialFeaturePlot resolves metadata columns natively.
+      score <- input$sp_score
+      if (is.null(score) || !nzchar(score))
+        return(error_plot("No module scores found.\nAdd them with AddModuleScore() or AddModuleScore_UCell()."))
+      if (!score %in% colnames(o@meta.data))
+        return(error_plot(paste0("Score not found in metadata: ", score)))
+
+      tryCatch({
+        p <- SpatialFeaturePlot(o, features = score, images = img,
+                                pt.size.factor = pt, alpha = al)
+
+        p <- p + if (isTRUE(input$sp_score_center))
+          score_centered_fill(o@meta.data[[score]], input$sp_score_scale)
+        else
+          cont_fill_scale(input$sp_score_scale)
+
         apply_theme(p, input$sp_theme, input$base_size)
       }, error = function(e) error_plot(conditionMessage(e)))
     }
@@ -706,7 +832,7 @@ server <- function(input, output, session) {
 
       }, error = function(e) error_plot(conditionMessage(e)))
 
-    } else {
+    } else if (input$dr_type == "feature") {
       gene <- input$dr_gene
       req(gene, nchar(gene) > 0)
 
@@ -714,6 +840,28 @@ server <- function(input, output, session) {
         p <- FeaturePlot(o, features = gene, reduction = red,
                          pt.size = pt, raster = FALSE) +
           cont_color_scale(input$dr_color_scale)
+        apply_theme(p, input$dr_theme, input$base_size)
+      }, error = function(e) error_plot(conditionMessage(e)))
+
+    } else {
+      # Module / UCell score — FeaturePlot resolves metadata columns natively
+      score <- input$dr_score
+      if (is.null(score) || !nzchar(score))
+        return(error_plot("No module scores found.\nAdd them with AddModuleScore() or AddModuleScore_UCell()."))
+      if (!score %in% colnames(o@meta.data))
+        return(error_plot(paste0("Score not found in metadata: ", score)))
+
+      tryCatch({
+        p <- suppressMessages(
+          FeaturePlot(o, features = score, reduction = red,
+                      pt.size = pt, raster = FALSE)
+        )
+
+        p <- p + if (isTRUE(input$dr_score_center))
+          score_centered_color(o@meta.data[[score]], input$dr_score_scale)
+        else
+          cont_color_scale(input$dr_score_scale)
+
         apply_theme(p, input$dr_theme, input$base_size)
       }, error = function(e) error_plot(conditionMessage(e)))
     }
@@ -742,17 +890,34 @@ server <- function(input, output, session) {
       lvls <- levels(o@meta.data[[grp]])
       cols <- get_cat_colors(input$cat_palette, lvls)
 
+      # Y-axis label depends on what was selected: genes are expression,
+      # metadata columns are scores.
+      score_cols <- get_numeric_meta(o)
+      n_scores   <- sum(genes %in% score_cols)
+      y_lab <- if (n_scores == length(genes)) "Score"
+               else if (n_scores > 0)         "Expression / Score"
+               else                           "Expression"
+
       # ── Helper: extract a long data frame for violin / box ──
+      # FetchData resolves genes AND numeric metadata (module/UCell scores)
+      # in one call; GetAssayData would only see genes.
       get_expr_long <- function() {
-        ad <- GetAssayData(o, layer = "data")
-        ok <- genes[genes %in% rownames(ad)]
-        if (length(ok) == 0) stop("None of the requested genes were found in the active assay.")
+        ok <- genes[genes %in% rownames(o) | genes %in% colnames(o@meta.data)]
+        if (length(ok) == 0)
+          stop("None of the requested genes or scores were found.")
+
+        vals <- FetchData(o, vars = ok)
+        # FetchData may rename non-syntactic names; realign to what it returned
+        ok   <- colnames(vals)
+
         df <- data.frame(
           group = o@meta.data[[grp]],
-          t(as.matrix(ad[ok, , drop = FALSE])),
+          vals,
           check.names = FALSE
         )
         df_long <- pivot_longer(df, cols = -group, names_to = "gene", values_to = "expr")
+        # Preserve the order the user selected them in
+        df_long$gene  <- factor(df_long$gene, levels = ok)
         df_long$group <- factor(df_long$group, levels = lvls)
         df_long
       }
@@ -769,7 +934,7 @@ server <- function(input, output, session) {
           facet_wrap(~gene, scales = "free_y") +
           theme(axis.text.x = element_text(angle = 45, hjust = 1),
                 legend.position = "none") +
-          labs(x = grp, y = "Expression")
+          labs(x = grp, y = y_lab)
 
         if (isTRUE(input$fe_show_stats)) {
           stat_res <- compute_stats(df_long, lvls, input, session)
@@ -800,7 +965,7 @@ server <- function(input, output, session) {
           facet_wrap(~gene, scales = "free_y") +
           theme(axis.text.x = element_text(angle = 45, hjust = 1),
                 legend.position = "none") +
-          labs(x = grp, y = "Expression")
+          labs(x = grp, y = y_lab)
 
         if (isTRUE(input$fe_show_stats)) {
           stat_res <- compute_stats(df_long, lvls, input, session)

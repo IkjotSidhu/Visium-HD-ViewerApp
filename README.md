@@ -14,9 +14,9 @@ Load a Seurat `.RDS` file and explore it through spatial plots, UMAP embeddings,
 
 | Tab | What it does |
 |---|---|
-| **Spatial** | Plot clusters or gene expression over tissue images. Choose sample/image, point size, alpha, and colour scale. |
-| **UMAP / Reduction** | `DimPlot` and `FeaturePlot` on any dimensionality reduction, with optional cluster labels. |
-| **Feature Expression** | Violin, box, and dot plots for one or many genes, grouped by any metadata column — with optional statistics. |
+| **Spatial** | Plot clusters, gene expression, or module/UCell scores over tissue images. Choose sample/image, point size, alpha, and colour scale. |
+| **UMAP / Reduction** | `DimPlot` and `FeaturePlot` on any dimensionality reduction — clusters, genes, or module scores — with optional cluster labels. |
+| **Feature Expression** | Violin, box, and dot plots for one or many genes *and/or* module scores, grouped by any metadata column — with optional statistics. |
 | **Composition** | Stacked/grouped bar charts showing cell-type or cluster makeup per sample. |
 | **Metadata** | Bar charts, histograms, density plots, and a searchable data table for any metadata column. |
 
@@ -27,7 +27,19 @@ Load a Seurat `.RDS` file and explore it through spatial plots, UMAP embeddings,
 - **Per-tab themes** — Classic, Prism, Minimal, or Black & White, chosen independently for each plot type.
 - **Prism-style statistics** — Wilcoxon or t-test with significance brackets on violin and box plots.
 - **Biologist-friendly labels** — the app reports *bins* (Visium HD), *spots* (standard Visium), or *cells* (scRNA-seq) as appropriate, and says *genes* rather than *features*. Bin size (8 µm / 16 µm) is auto-detected.
+- **Module & UCell scores** — anything numeric in `meta.data` (from `AddModuleScore()`, `AddModuleScore_UCell()`, or QC metrics) plots exactly like a gene, with the same continuous colour scales.
 - **Export anything** — every plot saves as PDF (vector) or PNG at a width and height you specify.
+
+---
+
+## Module scores
+
+Scores computed with `AddModuleScore()` or UCell's `AddModuleScore_UCell()` are stored as numeric columns in `meta.data`, and the app picks them up automatically — no naming convention required.
+
+- **Spatial** and **UMAP** tabs: choose **Module / UCell Score** as the plot type, then pick your score.
+- **Feature Expression** tab: scores appear in the selector under a *Module / UCell scores* group, above the gene list. You can mix genes and scores in the same violin/box/dot plot.
+
+**Colour scales.** `AddModuleScore` returns values centred against a control gene set, so scores are routinely **negative**. Two diverging scales (Blue-Red, Purple-Green) put zero at the neutral midpoint. Ticking **Center colour scale at 0** forces symmetric limits so that +0.5 and −0.5 render as equally intense — without it, a score spanning −0.2 to 2.0 makes every depleted region look identical. UCell scores are bounded 0–1 and are usually clearest with a sequential scale like Viridis.
 
 ---
 
