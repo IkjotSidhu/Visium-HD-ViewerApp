@@ -25,6 +25,7 @@ cran_packages <- c(
   "dplyr",         # data wrangling
   "tidyr",         # long/wide reshaping
   "rstatix",       # statistical tests for plot annotation
+  "shinycssloaders", # loading spinners on plots
   "Seurat"         # single-cell / spatial object handling
 )
 

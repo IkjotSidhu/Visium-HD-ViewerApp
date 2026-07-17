@@ -12,6 +12,13 @@ library(scales)
 library(dplyr)
 library(tidyr)
 library(rstatix)
+library(shinycssloaders)
+
+# Wrap a plot output with a loading spinner — used on every plot so the user
+# always sees that something is happening while a plot recomputes.
+spin <- function(output) {
+  shinycssloaders::withSpinner(output, type = 6, color = "#18BC9C", size = 0.8)
+}
 
 # ============================================================
 # PALETTE DEFINITIONS  (top-level so server can access them)
@@ -368,7 +375,7 @@ ui <- page_sidebar(
 
     # ── Object loading ────────────────────────────────────────
     card(
-      card_header("Load Seurat Object"),
+      card_header(tagList(icon("dna"), " Load Seurat Object")),
       # Opens the native OS file-picker; path goes into the text box below.
       # No file is copied — only the path is captured.
       actionButton("browse_btn", "Browse for RDS File",
@@ -377,16 +384,21 @@ ui <- page_sidebar(
       br(), br(),
       textInput("rds_path", label = NULL,
                 placeholder = "…or paste full path here"),
-      actionButton("load_btn", "Load Object",
+      actionButton("load_btn", tagList(icon("upload"), " Load Object"),
                    class = "btn-primary w-100"),
-      br(),
-      verbatimTextOutput("obj_info", placeholder = TRUE)
+      uiOutput("obj_info")
     ),
 
     # ── Active assay ──────────────────────────────────────────
-    card(
-      card_header("Active Assay"),
-      selectInput("active_assay", label = NULL, choices = NULL)
+    conditionalPanel(
+      "output.has_object",
+      card(
+        card_header(tooltip(
+          tagList(icon("layer-group"), " Active Assay", icon("circle-info", class = "text-muted")),
+          "Which assay's log-normalized data layer is plotted. Switch between e.g. Spatial.008um and sketch."
+        )),
+        selectInput("active_assay", label = NULL, choices = NULL)
+      )
     ),
 
     # ── Global plot style ─────────────────────────────────────
@@ -414,6 +426,36 @@ ui <- page_sidebar(
     )
   ),
 
+  # ── Welcome / empty state (shown until an object is loaded) ──
+  conditionalPanel(
+    "!output.has_object",
+    div(
+      class = "text-center",
+      style = "max-width:640px;margin:8vh auto;",
+      div(icon("dna"), style = "font-size:64px;color:#18BC9C;margin-bottom:16px;"),
+      h2("Visium HD Viewer", class = "fw-bold"),
+      p(class = "text-muted fs-5",
+        "Explore Seurat objects with Visium HD spatial data — no coding required."),
+      hr(),
+      div(
+        class = "text-start d-inline-block",
+        style = "margin-top:8px;",
+        p(tagList(tags$b("1."), " Click ",
+                  tags$span(icon("folder-open"), " Browse for RDS File", class = "text-primary"),
+                  " in the sidebar (or paste a path).")),
+        p(tagList(tags$b("2."), " Click ",
+                  tags$span(icon("upload"), " Load Object", class = "text-primary"),
+                  " — large objects take a minute.")),
+        p(tagList(tags$b("3."), " Explore the tabs: spatial maps, UMAP, expression, ",
+                  "composition, and metadata.")),
+        p(class = "text-muted",
+          icon("lock"), " Your file is read locally and never uploaded.")
+      )
+    )
+  ),
+
+  conditionalPanel(
+    "output.has_object",
   navset_card_tab(
     id = "main_tabs",
 
@@ -465,7 +507,7 @@ ui <- page_sidebar(
           ),
           downloadButton("sp_dl", "Save", class = "btn-success w-100")
         ),
-        plotOutput("sp_plot", height = "620px")
+        spin(plotOutput("sp_plot", height = "620px"))
       )
     ),
 
@@ -516,7 +558,7 @@ ui <- page_sidebar(
           ),
           downloadButton("dr_dl", "Save", class = "btn-success w-100")
         ),
-        plotOutput("dr_plot", height = "620px")
+        spin(plotOutput("dr_plot", height = "620px"))
       )
     ),
 
@@ -577,7 +619,7 @@ ui <- page_sidebar(
           ),
           downloadButton("fe_dl", "Save", class = "btn-success w-100")
         ),
-        plotOutput("fe_plot", height = "620px")
+        spin(plotOutput("fe_plot", height = "620px"))
       )
     ),
 
@@ -619,7 +661,7 @@ ui <- page_sidebar(
           ),
           downloadButton("co_dl", "Save", class = "btn-success w-100")
         ),
-        plotOutput("co_plot", height = "580px")
+        spin(plotOutput("co_plot", height = "580px"))
       )
     ),
 
@@ -652,6 +694,7 @@ ui <- page_sidebar(
       )
     )
   )
+  )   # end conditionalPanel(output.has_object)
 )
 
 
@@ -756,19 +799,31 @@ server <- function(input, output, session) {
     if (nchar(path) == 0) { showNotification("Please enter a file path.", type = "warning"); return() }
     if (!file.exists(path)) { showNotification("File not found.", type = "error"); return() }
 
-    id <- showNotification("Loading… large objects may take a minute.", duration = NULL, type = "message")
-    on.exit(removeNotification(id))
+    withProgress(message = "Loading Seurat object", value = 0, {
+      incProgress(0.1, detail = "Reading file from disk…")
+      o <- tryCatch(readRDS(path), error = function(e) e)
 
-    tryCatch({
-      o <- readRDS(path)
-      if (!inherits(o, "Seurat")) { showNotification("Not a Seurat object.", type = "error"); return() }
+      if (inherits(o, "error")) {
+        showNotification(paste("Error:", conditionMessage(o)), type = "error"); return()
+      }
+      if (!inherits(o, "Seurat")) {
+        showNotification("That file is not a Seurat object.", type = "error"); return()
+      }
+
+      incProgress(0.7, detail = "Preparing controls…")
       rv$obj <- o
       populate_controls(o)
-      showNotification("Loaded successfully.", type = "message")
-    }, error = function(e) {
-      showNotification(paste("Error:", conditionMessage(e)), type = "error")
+      incProgress(0.2, detail = "Done")
     })
+    showNotification(
+      tagList(icon("circle-check"), sprintf(" Loaded: %s × %s genes.",
+              format(ncol(rv$obj), big.mark = ","), format(nrow(rv$obj), big.mark = ","))),
+      type = "message", duration = 5)
   })
+
+  # Flag used by conditionalPanels to reveal the tabs once an object is present
+  output$has_object <- reactive(!is.null(rv$obj))
+  outputOptions(output, "has_object", suspendWhenHidden = FALSE)
 
   # ── Populate UI Controls ───────────────────────────────────
   populate_controls <- function(o) {
@@ -868,15 +923,14 @@ server <- function(input, output, session) {
   })
 
   # ── Object Info ────────────────────────────────────────────
-  output$obj_info <- renderText({
+  output$obj_info <- renderUI({
     o <- rv$obj
-    if (is.null(o)) return("No object loaded.")
+    if (is.null(o)) return(NULL)
 
     assays     <- Assays(o)
     has_images <- length(o@images) > 0
 
-    # ── Detect Visium HD bin size from assay names ──────────
-    # Assay names like "Spatial.008um" or "Spatial.016um"
+    # Detect Visium HD bin size(s) from assay names (e.g. "Spatial.008um")
     bin_sizes <- character(0)
     for (a in assays) {
       m <- regmatches(a, regexpr("(?i)(?<=\\.)0*(\\d+)um", a, perl = TRUE))
@@ -888,26 +942,28 @@ server <- function(input, output, session) {
     bin_sizes    <- unique(bin_sizes)
     is_visium_hd <- length(bin_sizes) > 0
 
-    # ── Choose correct terminology ───────────────────────────
-    # Visium HD  → "Bins"   (binned square grid)
-    # Visium std → "Spots"  (circular capture spots)
-    # scRNA-seq  → "Cells"
-    spot_label <- if (is_visium_hd) "Bins" else if (has_images) "Spots" else "Cells"
+    # Visium HD → "bins", standard Visium → "spots", scRNA-seq → "cells"
+    spot_label <- if (is_visium_hd) "bins" else if (has_images) "spots" else "cells"
 
-    # ── Fixed-width label helper (left-aligned, 12 chars) ───
-    lbl <- function(x) formatC(x, width = -12, flag = "-")
+    stat_row <- function(ic, label, value) {
+      div(class = "d-flex align-items-center gap-2 mb-1",
+          icon(ic, class = "text-secondary", style = "width:16px;"),
+          span(class = "text-muted small", label, ":"),
+          span(class = "fw-semibold small ms-auto text-end", value))
+    }
 
-    # ── Build output lines ───────────────────────────────────
-    lines <- c(
-      if (is_visium_hd) paste0(lbl("Binning:"), paste(bin_sizes, collapse = ", ")),
-      paste0(lbl(paste0(spot_label, ":")),  format(ncol(o), big.mark = ",")),
-      paste0(lbl("Genes:"),       format(nrow(o), big.mark = ",")),
-      paste0(lbl("Assays:"),      paste(assays, collapse = ", ")),
-      paste0(lbl("Images:"),      if (has_images)           paste(names(o@images),     collapse = ", ") else "none"),
-      paste0(lbl("Reductions:"),  if (length(o@reductions)) paste(names(o@reductions), collapse = ", ") else "none")
+    div(
+      class = "mt-3 p-2 rounded",
+      style = "background:rgba(24,188,156,0.07);",
+      if (is_visium_hd) stat_row("border-all", "Binning", paste(bin_sizes, collapse = ", ")),
+      stat_row("table-cells", tools::toTitleCase(spot_label), format(ncol(o), big.mark = ",")),
+      stat_row("dna",         "Genes",   format(nrow(o), big.mark = ",")),
+      stat_row("layer-group", "Assays",  paste(assays, collapse = ", ")),
+      if (has_images)
+        stat_row("image", "Images", paste(names(o@images), collapse = ", ")),
+      if (length(o@reductions) > 0)
+        stat_row("circle-nodes", "Reductions", paste(names(o@reductions), collapse = ", "))
     )
-
-    paste(lines, collapse = "\n")
   })
 
 
@@ -1369,8 +1425,8 @@ server <- function(input, output, session) {
   })
 
   output$me_content <- renderUI({
-    if (input$me_type == "table") DTOutput("me_table")
-    else                          plotOutput("me_plot", height = "560px")
+    if (input$me_type == "table") spin(DTOutput("me_table"))
+    else                          spin(plotOutput("me_plot", height = "560px"))
   })
 
   output$me_plot  <- renderPlot({ me_plot_r() })

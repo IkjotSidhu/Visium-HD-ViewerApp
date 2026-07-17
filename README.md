@@ -30,6 +30,7 @@ Load a Seurat `.RDS` file and explore it through spatial plots, UMAP embeddings,
 - **Biologist-friendly labels** — the app reports *bins* (Visium HD), *spots* (standard Visium), or *cells* (scRNA-seq) as appropriate, and says *genes* rather than *features*. Bin size (8 µm / 16 µm) is auto-detected.
 - **Module & UCell scores** — anything numeric in `meta.data` (from `AddModuleScore()`, `AddModuleScore_UCell()`, or QC metrics) plots exactly like a gene, with the same continuous colour scales.
 - **Export anything** — every plot saves as PDF (vector) or PNG at a width and height you specify.
+- **Friendly & interactive** — a guided welcome screen, a progress bar while large objects load, loading spinners on every plot, an at-a-glance object summary, and helpful tooltips.
 
 ---
 
