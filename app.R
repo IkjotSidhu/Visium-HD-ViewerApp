@@ -76,6 +76,23 @@ order_factor <- function(x) {
   factor(x, levels = sorted_lvls)
 }
 
+# Like order_factor(), but honours a user-supplied level order when given.
+# Levels present in the data but absent from `custom_levels` are appended in
+# numeric order, so nothing ever silently disappears from a plot.
+ordered_factor <- function(x, custom_levels = NULL) {
+  if (is.null(custom_levels) || length(custom_levels) == 0)
+    return(order_factor(x))
+  x       <- as.character(x)
+  present <- unique(x)
+  head    <- custom_levels[custom_levels %in% present]
+  missing <- setdiff(present, custom_levels)
+  if (length(missing) > 0) {
+    nums    <- suppressWarnings(as.numeric(missing))
+    missing <- if (!any(is.na(nums))) missing[order(nums)] else sort(missing)
+  }
+  factor(x, levels = c(head, missing))
+}
+
 # Return n named colours from a palette, extending via interpolation if needed.
 # `palettes` defaults to the built-in list but the server passes its reactive
 # store so user-uploaded palettes work too.
@@ -318,6 +335,22 @@ theme_picker_ui <- function(id, selected = "classic") {
               selected = selected)
 }
 
+# Reusable "custom group order" widget: a checkbox that reveals a
+# drag-to-reorder list of the current grouping's levels. The selectize
+# `drag_drop` plugin ships with Shiny, so no extra package is needed.
+order_ui <- function(check_id, order_id, label = "Custom group order") {
+  tagList(
+    checkboxInput(check_id, label, FALSE),
+    conditionalPanel(
+      sprintf("input.%s", check_id),
+      selectizeInput(order_id, "Drag to reorder",
+                     choices = NULL, multiple = TRUE,
+                     options = list(plugins = list("drag_drop"),
+                                    placeholder = "levels appear here"))
+    )
+  )
+}
+
 
 # ============================================================
 # UI
@@ -504,6 +537,7 @@ ui <- page_sidebar(
                                   "Dot Plot" = "dot",
                                   "Box Plot" = "box")),
           selectInput("fe_group", "Group By", choices = NULL),
+          order_ui("fe_order_on", "fe_order"),
 
           # ── Statistics controls (violin / box only) ───────────
           hr(),
@@ -564,7 +598,15 @@ ui <- page_sidebar(
                       choices = c("As-is"                 = "none",
                                   "Alphabetical"          = "alpha",
                                   "Total cells (desc)"    = "total_desc",
-                                  "Total cells (asc)"     = "total_asc")),
+                                  "Total cells (asc)"     = "total_asc",
+                                  "Custom order"          = "custom")),
+          conditionalPanel("input.co_sort == 'custom'",
+            selectizeInput("co_x_order", "Drag to reorder X axis",
+                           choices = NULL, multiple = TRUE,
+                           options = list(plugins = list("drag_drop"),
+                                          placeholder = "levels appear here"))
+          ),
+          order_ui("co_fill_order_on", "co_fill_order", "Custom fill order"),
           checkboxInput("co_flip",  "Flip Coordinates", FALSE),
           checkboxInput("co_angle", "Rotate X Labels",  TRUE),
           theme_picker_ui("co_theme"),
@@ -799,12 +841,30 @@ server <- function(input, output, session) {
     DefaultAssay(rv$obj) <- input$active_assay
   })
 
-  # Keep reference-group choices in sync with the Group By selector
+  # Keep reference-group + reorder choices in sync with the Group By selector
   observeEvent(input$fe_group, {
     o <- rv$obj
     req(o, input$fe_group, input$fe_group %in% colnames(o@meta.data))
     lvls <- levels(order_factor(o@meta.data[[input$fe_group]]))
     updateSelectInput(session, "fe_stat_ref", choices = lvls, selected = lvls[1])
+    updateSelectizeInput(session, "fe_order", choices = lvls, selected = lvls,
+                         server = TRUE)
+  })
+
+  # Keep Composition reorder lists in sync with their selectors
+  observeEvent(input$co_fill, {
+    o <- rv$obj
+    req(o, input$co_fill, input$co_fill %in% colnames(o@meta.data))
+    lvls <- levels(order_factor(o@meta.data[[input$co_fill]]))
+    updateSelectizeInput(session, "co_fill_order", choices = lvls, selected = lvls,
+                         server = TRUE)
+  })
+  observeEvent(input$co_x, {
+    o <- rv$obj
+    req(o, input$co_x, input$co_x %in% colnames(o@meta.data))
+    lvls <- levels(order_factor(o@meta.data[[input$co_x]]))
+    updateSelectizeInput(session, "co_x_order", choices = lvls, selected = lvls,
+                         server = TRUE)
   })
 
   # ── Object Info ────────────────────────────────────────────
@@ -1023,8 +1083,9 @@ server <- function(input, output, session) {
     grp   <- input$fe_group
 
     tryCatch({
-      # Pre-sort group factor
-      o@meta.data[[grp]] <- order_factor(o@meta.data[[grp]])
+      # Pre-sort group factor (custom order if the user set one)
+      custom <- if (isTRUE(input$fe_order_on)) input$fe_order else NULL
+      o@meta.data[[grp]] <- ordered_factor(o@meta.data[[grp]], custom)
       lvls <- levels(o@meta.data[[grp]])
       cols <- cat_colors(lvls)
 
@@ -1154,20 +1215,25 @@ server <- function(input, output, session) {
         ungroup()
 
       # Sort X axis
-      x_order <- switch(input$co_sort,
-        alpha      = sort(unique(df$.x)),
-        total_desc = df %>% group_by(.x) %>% summarise(tot = sum(n), .groups="drop") %>%
-                       arrange(desc(tot)) %>% pull(.x),
-        total_asc  = df %>% group_by(.x) %>% summarise(tot = sum(n), .groups="drop") %>%
-                       arrange(tot) %>% pull(.x),
-        unique(df$.x)   # none / as-is
-      )
-      df$.x <- factor(df$.x, levels = x_order)
+      if (identical(input$co_sort, "custom")) {
+        df$.x <- ordered_factor(df$.x, input$co_x_order)
+      } else {
+        x_order <- switch(input$co_sort,
+          alpha      = sort(unique(df$.x)),
+          total_desc = df %>% group_by(.x) %>% summarise(tot = sum(n), .groups="drop") %>%
+                         arrange(desc(tot)) %>% pull(.x),
+          total_asc  = df %>% group_by(.x) %>% summarise(tot = sum(n), .groups="drop") %>%
+                         arrange(tot) %>% pull(.x),
+          unique(df$.x)   # none / as-is
+        )
+        df$.x <- factor(df$.x, levels = x_order)
+      }
 
-      # Numeric-aware ordering for fill
-      fill_lvls <- order_factor(df$.fill) |> levels()
-      df$.fill  <- factor(df$.fill, levels = fill_lvls)
-      cols      <- cat_colors(fill_lvls)
+      # Fill ordering — custom if the user set one, else numeric-aware
+      fill_custom <- if (isTRUE(input$co_fill_order_on)) input$co_fill_order else NULL
+      df$.fill    <- ordered_factor(df$.fill, fill_custom)
+      fill_lvls   <- levels(df$.fill)
+      cols        <- cat_colors(fill_lvls)
 
       # Build plot
       if (input$co_type == "prop") {

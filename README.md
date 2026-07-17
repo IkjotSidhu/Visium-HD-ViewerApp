@@ -23,6 +23,7 @@ Load a Seurat `.RDS` file and explore it through spatial plots, UMAP embeddings,
 **Across the whole app:**
 
 - **Correct cluster ordering** — clusters sort numerically (0, 1, 2 … 10, 11) rather than alphabetically (0, 1, 10, 11, 2 …).
+- **Custom group order** — override the default order by dragging clusters into any sequence you like (e.g. crypt → villus). Available on the Feature Expression x-axis and the Composition fill/x-axis.
 - **25 colour palettes + your own** — a built-in 60-colour palette, 14 GraphPad Prism palettes via [ggprism](https://csdaw.github.io/ggprism/), and 5 ColorBrewer sets. Or add your own by pasting hex codes / uploading a colour file (see below). Palettes extend automatically if you have more clusters than colours.
 - **Per-tab themes** — Classic, Prism, Minimal, or Black & White, chosen independently for each plot type.
 - **Prism-style statistics** — Wilcoxon or t-test with significance brackets on violin and box plots.
