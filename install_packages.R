@@ -26,6 +26,7 @@ cran_packages <- c(
   "tidyr",         # long/wide reshaping
   "rstatix",       # statistical tests for plot annotation
   "shinycssloaders", # loading spinners on plots
+  "shinyFiles",    # in-app file browser for picking .RDS files
   "Seurat"         # single-cell / spatial object handling
 )
 

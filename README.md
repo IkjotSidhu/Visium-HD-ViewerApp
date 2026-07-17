@@ -111,8 +111,8 @@ shiny::runApp("app.R", launch.browser = TRUE)
 
 Your browser will open the app. Then:
 
-1. Click **Browse for RDS File** to pick your Seurat object with a native file dialog — or paste a full path into the text box.
-2. Click **Load Object**. Large objects take a minute or two.
+1. Click **Choose .RDS File…** and pick your Seurat object in the in-app file browser — it loads automatically. (Or paste a full path and click **Load from path**.)
+2. Wait for the progress bar. Large objects take a minute or two.
 3. Explore the tabs. Adjust the palette and font size in the sidebar; each tab has its own theme selector.
 4. Set a width/height and click **Save** to export any plot as PDF or PNG.
 

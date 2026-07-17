@@ -13,6 +13,7 @@ library(dplyr)
 library(tidyr)
 library(rstatix)
 library(shinycssloaders)
+library(shinyFiles)
 
 # Wrap a plot output with a loading spinner — used on every plot so the user
 # always sees that something is happening while a plot recomputes.
@@ -376,16 +377,21 @@ ui <- page_sidebar(
     # ── Object loading ────────────────────────────────────────
     card(
       card_header(tagList(icon("dna"), " Load Seurat Object")),
-      # Opens the native OS file-picker; path goes into the text box below.
-      # No file is copied — only the path is captured.
-      actionButton("browse_btn", "Browse for RDS File",
-                   icon  = icon("folder-open"),
-                   class = "btn-outline-primary w-100"),
-      br(), br(),
+      # In-app file browser (shinyFiles). Navigates the filesystem in a modal
+      # and returns the chosen path — nothing is copied or uploaded, so this
+      # works with objects far too large for a standard fileInput().
+      shinyFiles::shinyFilesButton(
+        "rds_file", "Choose .RDS File…",
+        title = "Select a Seurat .RDS file",
+        multiple = FALSE, icon = icon("folder-open"),
+        class = "btn-primary w-100"),
+      uiOutput("chosen_file"),
+      # Fallback: paste a path directly (useful for remote/headless sessions)
+      div(class = "text-muted small mt-3 mb-1", "or paste a path:"),
       textInput("rds_path", label = NULL,
-                placeholder = "…or paste full path here"),
-      actionButton("load_btn", tagList(icon("upload"), " Load Object"),
-                   class = "btn-primary w-100"),
+                placeholder = "/full/path/to/object.rds"),
+      actionButton("load_path", tagList(icon("upload"), " Load from path"),
+                   class = "btn-outline-secondary btn-sm w-100"),
       uiOutput("obj_info")
     ),
 
@@ -441,11 +447,9 @@ ui <- page_sidebar(
         class = "text-start d-inline-block",
         style = "margin-top:8px;",
         p(tagList(tags$b("1."), " Click ",
-                  tags$span(icon("folder-open"), " Browse for RDS File", class = "text-primary"),
-                  " in the sidebar (or paste a path).")),
-        p(tagList(tags$b("2."), " Click ",
-                  tags$span(icon("upload"), " Load Object", class = "text-primary"),
-                  " — large objects take a minute.")),
+                  tags$span(icon("folder-open"), " Choose .RDS File", class = "text-primary"),
+                  " in the sidebar and pick your object.")),
+        p(tagList(tags$b("2."), " It loads automatically — large objects take a minute.")),
         p(tagList(tags$b("3."), " Explore the tabs: spatial maps, UMAP, expression, ",
                   "composition, and metadata.")),
         p(class = "text-muted",
@@ -779,25 +783,47 @@ server <- function(input, output, session) {
                      tags$div(swatches)))
   })
 
-  # ── Browse button — opens the native OS file picker ────────
-  # file.choose() is a blocking call that returns the selected path.
-  # Because the Shiny process runs locally, this opens the macOS / Windows
-  # file dialog on the user's own machine — no file is uploaded or copied.
-  observeEvent(input$browse_btn, {
-    path <- tryCatch(
-      file.choose(),          # native OS dialog
-      error = function(e) ""  # "" if user cancels or dialog unavailable
-    )
-    if (nchar(path) > 0) {
-      updateTextInput(session, "rds_path", value = path)
-    }
+  # ── In-app file browser (shinyFiles) ───────────────────────
+  # Roots the browser can navigate: the user's home folder, mounted volumes,
+  # and the filesystem root. Returns a path only — no file is ever copied.
+  volumes <- c(Home = fs::path_home(),
+               shinyFiles::getVolumes()(),
+               Root = "/")
+  shinyFiles::shinyFileChoose(input, "rds_file", roots = volumes,
+                              filetypes = c("rds", "RDS", "Rds"))
+
+  # Path chosen via the file browser
+  chosen_path <- reactive({
+    req(input$rds_file)
+    sel <- shinyFiles::parseFilePaths(volumes, input$rds_file)
+    if (nrow(sel) == 0) return(NULL)
+    as.character(sel$datapath[[1]])
   })
 
-  # ── Load Object ────────────────────────────────────────────
-  observeEvent(input$load_btn, {
-    path <- trimws(input$rds_path)
-    if (nchar(path) == 0) { showNotification("Please enter a file path.", type = "warning"); return() }
-    if (!file.exists(path)) { showNotification("File not found.", type = "error"); return() }
+  # Auto-load as soon as a file is picked in the browser (one action, no
+  # separate "Load" click), and also support the paste-a-path fallback.
+  observeEvent(chosen_path(),   { load_object(chosen_path()) },        ignoreInit = TRUE)
+  observeEvent(input$load_path, { load_object(trimws(input$rds_path)) }, ignoreInit = TRUE)
+
+  # Show which file is currently selected
+  output$chosen_file <- renderUI({
+    p <- chosen_path()
+    if (is.null(p)) return(NULL)
+    div(class = "small text-muted mt-2 text-truncate",
+        title = p, icon("file"), " ", basename(p))
+  })
+
+  # ── Load an object from a path (shared by both entry points) ──
+  load_object <- function(path) {
+    if (is.null(path) || !nzchar(path)) {
+      showNotification("Choose a file or paste a path first.", type = "warning"); return()
+    }
+    if (!file.exists(path)) {
+      showNotification("File not found — check the path.", type = "error"); return()
+    }
+    if (!grepl("\\.rds$", path, ignore.case = TRUE)) {
+      showNotification("That doesn't look like an .RDS file.", type = "warning")
+    }
 
     withProgress(message = "Loading Seurat object", value = 0, {
       incProgress(0.1, detail = "Reading file from disk…")
@@ -819,7 +845,7 @@ server <- function(input, output, session) {
       tagList(icon("circle-check"), sprintf(" Loaded: %s × %s genes.",
               format(ncol(rv$obj), big.mark = ","), format(nrow(rv$obj), big.mark = ","))),
       type = "message", duration = 5)
-  })
+  }
 
   # Flag used by conditionalPanels to reveal the tabs once an object is present
   output$has_object <- reactive(!is.null(rv$obj))
