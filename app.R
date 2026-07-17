@@ -77,12 +77,61 @@ order_factor <- function(x) {
 }
 
 # Return n named colours from a palette, extending via interpolation if needed.
-get_cat_colors <- function(pal_name, levels_vec) {
+# `palettes` defaults to the built-in list but the server passes its reactive
+# store so user-uploaded palettes work too.
+get_cat_colors <- function(pal_name, levels_vec, palettes = PALETTES) {
   n    <- length(levels_vec)
-  cols <- PALETTES[[pal_name]]
+  cols <- palettes[[pal_name]]
   if (is.null(cols)) cols <- hue_pal()(n)
   out  <- if (n <= length(cols)) cols[seq_len(n)] else colorRampPalette(cols)(n)
   setNames(out, levels_vec)
+}
+
+# Parse a free-text blob of colours into a validated hex vector.
+# Accepts hex codes (#RGB / #RRGGBB / #RRGGBBAA) and R colour names
+# (e.g. "red", "steelblue"), separated by commas, whitespace, or newlines.
+# Returns list(colors = <chr>, invalid = <chr>).
+parse_colors <- function(text) {
+  raw <- unlist(strsplit(text, "[,;\\s]+", perl = TRUE))
+  raw <- trimws(raw)
+  raw <- raw[nzchar(raw)]
+  if (length(raw) == 0) return(list(colors = character(0), invalid = character(0)))
+
+  is_hex  <- grepl("^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$", raw)
+  is_name <- tolower(raw) %in% tolower(grDevices::colors())
+  valid   <- is_hex | is_name
+
+  list(colors  = raw[valid],
+       invalid = raw[!valid])
+}
+
+# Pull colours out of an uploaded file. For CSV/TSV, auto-detects the column
+# with the most valid colours (handles annotation tables that have a "Color"
+# column alongside other data). For plain text, one token per line/comma.
+extract_colors_from_file <- function(path, name) {
+  ext <- tolower(tools::file_ext(name))
+  if (ext %in% c("csv", "tsv", "txt")) {
+    sep <- if (ext == "tsv") "\t" else if (ext == "csv") "," else ""
+    df <- tryCatch(
+      if (nzchar(sep))
+        utils::read.csv(path, sep = sep, stringsAsFactors = FALSE, check.names = FALSE)
+      else
+        NULL,
+      error = function(e) NULL
+    )
+    if (!is.null(df) && ncol(df) >= 1) {
+      # Score each column by how many entries are valid colours
+      best <- NULL; best_n <- 0
+      for (col in names(df)) {
+        p <- parse_colors(paste(df[[col]], collapse = "\n"))
+        if (length(p$colors) > best_n) { best <- p$colors; best_n <- length(p$colors) }
+      }
+      if (best_n > 0) return(best)
+    }
+    # Fall back to reading the whole file as free text
+    return(parse_colors(paste(readLines(path, warn = FALSE), collapse = "\n"))$colors)
+  }
+  parse_colors(paste(readLines(path, warn = FALSE), collapse = "\n"))$colors
 }
 
 # Return a ggplot2 theme object (used with patchwork & operator).
@@ -314,6 +363,21 @@ ui <- page_sidebar(
                   choices  = names(PALETTES),
                   selected = "Project Custom (60)"),
       numericInput("base_size", "Base Font Size", 12, 8, 24, 1)
+    ),
+
+    # ── Custom palette ────────────────────────────────────────
+    card(
+      card_header("Add Custom Palette"),
+      textInput("pal_name", "Palette name", placeholder = "My palette"),
+      textAreaInput("pal_text", "Paste colours",
+                    placeholder = "#E64B35, #4DBBD5, #00A087\nor: red, steelblue, gold",
+                    height = "80px"),
+      fileInput("pal_file", "…or upload a file",
+                accept = c(".csv", ".tsv", ".txt"),
+                buttonLabel = "Browse", placeholder = "CSV / TSV / TXT"),
+      actionButton("pal_add", "Add Palette",
+                   icon = icon("plus"), class = "btn-primary w-100"),
+      uiOutput("pal_preview")
     )
   ),
 
@@ -556,6 +620,80 @@ server <- function(input, output, session) {
 
   rv <- reactiveValues(obj = NULL)
 
+  # Reactive palette store: built-ins plus any the user adds this session.
+  palettes_rv <- reactiveVal(PALETTES)
+
+  # Server-side wrapper so every plot resolves colours from the live store.
+  cat_colors <- function(levels_vec) {
+    get_cat_colors(input$cat_palette, levels_vec, palettes_rv())
+  }
+
+  # ── Add custom palette (from pasted text and/or uploaded file) ──
+  observeEvent(input$pal_add, {
+    nm <- trimws(input$pal_name)
+    if (!nzchar(nm)) {
+      showNotification("Give the palette a name first.", type = "warning"); return()
+    }
+    if (nm %in% names(PALETTES)) {
+      showNotification("That name matches a built-in palette. Pick another.",
+                       type = "warning"); return()
+    }
+
+    # Collect colours from whichever inputs were used
+    cols <- character(0)
+    if (nzchar(trimws(input$pal_text %||% ""))) {
+      p <- parse_colors(input$pal_text)
+      cols <- c(cols, p$colors)
+      if (length(p$invalid) > 0)
+        showNotification(paste("Skipped invalid entries:",
+                               paste(p$invalid, collapse = ", ")),
+                         type = "warning", duration = 6)
+    }
+    if (!is.null(input$pal_file)) {
+      file_cols <- tryCatch(
+        extract_colors_from_file(input$pal_file$datapath, input$pal_file$name),
+        error = function(e) { showNotification(paste("File error:", conditionMessage(e)),
+                                               type = "error"); character(0) }
+      )
+      cols <- c(cols, file_cols)
+    }
+    cols <- unique(cols)
+
+    if (length(cols) == 0) {
+      showNotification("No valid colours found. Use hex codes (#RRGGBB) or R colour names.",
+                       type = "error"); return()
+    }
+
+    # Register and select it
+    store <- palettes_rv()
+    store[[nm]] <- cols
+    palettes_rv(store)
+    updateSelectInput(session, "cat_palette",
+                      choices = names(store), selected = nm)
+    showNotification(sprintf("Added palette '%s' (%d colours).", nm, length(cols)),
+                     type = "message")
+  })
+
+  # Live swatch preview of the colours currently entered
+  output$pal_preview <- renderUI({
+    txt <- input$pal_text %||% ""
+    cols <- parse_colors(txt)$colors
+    if (!is.null(input$pal_file)) {
+      cols <- c(cols, tryCatch(
+        extract_colors_from_file(input$pal_file$datapath, input$pal_file$name),
+        error = function(e) character(0)))
+    }
+    cols <- unique(cols)
+    if (length(cols) == 0) return(NULL)
+    swatches <- lapply(cols, function(c) {
+      tags$span(style = sprintf(
+        "display:inline-block;width:16px;height:16px;margin:2px;border-radius:3px;border:1px solid #ccc;background:%s;", c))
+    })
+    tagList(tags$div(style = "margin-top:8px;",
+                     tags$small(sprintf("%d colour(s):", length(cols))),
+                     tags$div(swatches)))
+  })
+
   # ── Browse button — opens the native OS file picker ────────
   # file.choose() is a blocking call that returns the selected path.
   # Because the Shiny process runs locally, this opens the macOS / Windows
@@ -735,7 +873,7 @@ server <- function(input, output, session) {
         # Apply numeric-aware factor ordering
         o@meta.data[[color_by]] <- order_factor(o@meta.data[[color_by]])
         lvls <- levels(o@meta.data[[color_by]])
-        cols <- get_cat_colors(input$cat_palette, lvls)
+        cols <- cat_colors(lvls)
 
         p <- suppressWarnings(
           SpatialDimPlot(o,
@@ -815,7 +953,7 @@ server <- function(input, output, session) {
       tryCatch({
         o@meta.data[[color_by]] <- order_factor(o@meta.data[[color_by]])
         lvls <- levels(o@meta.data[[color_by]])
-        cols <- get_cat_colors(input$cat_palette, lvls)
+        cols <- cat_colors(lvls)
 
         p <- suppressWarnings(
           DimPlot(o,
@@ -888,7 +1026,7 @@ server <- function(input, output, session) {
       # Pre-sort group factor
       o@meta.data[[grp]] <- order_factor(o@meta.data[[grp]])
       lvls <- levels(o@meta.data[[grp]])
-      cols <- get_cat_colors(input$cat_palette, lvls)
+      cols <- cat_colors(lvls)
 
       # Y-axis label depends on what was selected: genes are expression,
       # metadata columns are scores.
@@ -1029,7 +1167,7 @@ server <- function(input, output, session) {
       # Numeric-aware ordering for fill
       fill_lvls <- order_factor(df$.fill) |> levels()
       df$.fill  <- factor(df$.fill, levels = fill_lvls)
-      cols      <- get_cat_colors(input$cat_palette, fill_lvls)
+      cols      <- cat_colors(fill_lvls)
 
       # Build plot
       if (input$co_type == "prop") {
@@ -1091,7 +1229,7 @@ server <- function(input, output, session) {
           df[[grp]] <- order_factor(df[[grp]])
           df[[col]] <- order_factor(df[[col]])
           fill_lvls <- levels(df[[col]])
-          cols      <- get_cat_colors(input$cat_palette, fill_lvls)
+          cols      <- cat_colors(fill_lvls)
 
           p <- ggplot(df, aes(x = .data[[grp]], y = n,
                               fill = factor(.data[[col]], levels = fill_lvls))) +
@@ -1103,7 +1241,7 @@ server <- function(input, output, session) {
         } else {
           vals_f    <- order_factor(vals)
           fill_lvls <- levels(vals_f)
-          cols      <- get_cat_colors(input$cat_palette, fill_lvls)
+          cols      <- cat_colors(fill_lvls)
           df        <- as.data.frame(table(vals_f))
           colnames(df) <- c("value", "count")
           df$value  <- factor(df$value, levels = fill_lvls)
@@ -1119,7 +1257,7 @@ server <- function(input, output, session) {
         if (!is_num) {
           vals_f    <- order_factor(vals)
           fill_lvls <- levels(vals_f)
-          cols      <- get_cat_colors(input$cat_palette, fill_lvls)
+          cols      <- cat_colors(fill_lvls)
           df        <- as.data.frame(table(vals_f))
           colnames(df) <- c("value", "count")
           df$value  <- factor(df$value, levels = fill_lvls)
@@ -1132,7 +1270,7 @@ server <- function(input, output, session) {
           p <- ggplot(meta, aes(x = .data[[col]]))
           if (!is.null(grp)) {
             grp_lvls <- levels(order_factor(meta[[grp]]))
-            cols     <- get_cat_colors(input$cat_palette, grp_lvls)
+            cols     <- cat_colors(grp_lvls)
             meta[[grp]] <- factor(meta[[grp]], levels = grp_lvls)
             p <- p + geom_histogram(aes(fill = .data[[grp]]),
                                     position = "identity", alpha = 0.6, bins = 40) +
@@ -1149,7 +1287,7 @@ server <- function(input, output, session) {
         p <- ggplot(meta, aes(x = .data[[col]]))
         if (!is.null(grp)) {
           grp_lvls <- levels(order_factor(meta[[grp]]))
-          cols     <- get_cat_colors(input$cat_palette, grp_lvls)
+          cols     <- cat_colors(grp_lvls)
           meta[[grp]] <- factor(meta[[grp]], levels = grp_lvls)
           p <- p + geom_density(aes(fill = .data[[grp]]), alpha = 0.5) +
             scale_fill_manual(values = cols) + labs(fill = grp)
