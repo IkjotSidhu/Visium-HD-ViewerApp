@@ -104,12 +104,19 @@ ordered_factor <- function(x, custom_levels = NULL) {
 # Return n named colours from a palette, extending via interpolation if needed.
 # `palettes` defaults to the built-in list but the server passes its reactive
 # store so user-uploaded palettes work too.
+#
+# Colours are assigned by each level's CANONICAL (numeric-aware) order, not by
+# the order `levels_vec` happens to arrive in. This locks a cluster's colour to
+# its identity: manual re-ordering of a plot changes the display order but never
+# the colours, because the returned vector is keyed by name and applied with
+# scale_*_manual(), which matches by name.
 get_cat_colors <- function(pal_name, levels_vec, palettes = PALETTES) {
-  n    <- length(levels_vec)
-  cols <- palettes[[pal_name]]
+  canon <- levels(order_factor(levels_vec))   # stable, order-independent
+  n     <- length(canon)
+  cols  <- palettes[[pal_name]]
   if (is.null(cols)) cols <- hue_pal()(n)
-  out  <- if (n <= length(cols)) cols[seq_len(n)] else colorRampPalette(cols)(n)
-  setNames(out, levels_vec)
+  out   <- if (n <= length(cols)) cols[seq_len(n)] else colorRampPalette(cols)(n)
+  setNames(out, canon)
 }
 
 # Parse a free-text blob of colours into a validated hex vector.
