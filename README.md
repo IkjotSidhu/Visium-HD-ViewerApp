@@ -4,6 +4,9 @@ An R Shiny app for interactively exploring **10x Genomics Visium HD** spatial tr
 
 Load a Seurat `.RDS` file and explore it through spatial plots, UMAP embeddings, gene expression comparisons, cell-type composition, and metadata summaries. Every plot is publication-ready and exports to PDF or PNG.
 
+> ### 👉 Looking for a general-purpose viewer?
+> **[SeuratScope](https://github.com/IkjotSidhu/SeuratScope)** is the generalized successor to this app. It does everything Visium HD Viewer does, and works with **any** Seurat object — single-cell, standard Visium, or Visium HD — with an adaptive interface, a QC tab, split-by, co-expression, and heatmaps on top. This repo remains available for Visium HD–focused use.
+
 <!-- Add a screenshot here once you have one:
 ![Visium HD Viewer](docs/screenshots/overview.png)
 -->
